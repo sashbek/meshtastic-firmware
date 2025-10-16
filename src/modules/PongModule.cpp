@@ -21,7 +21,7 @@ ProcessMessage PongModule::handleReceived(const meshtastic_MeshPacket &mp)
     sprintf(message, "Не имеет значения!\nR:%d S:%.2f\nto !%x", mp.rx_rssi, mp.rx_snr, mp.from);
   else
     // Ping was obtained via mesh, SNR/RSSI can't be helpful, but hop count can
-    sprintf(message, "Все соединены!\nHops:%d/%d\nto !%x", mp.from, mp.hop_start - mp.hop_limit, mp.hop_start, mp.from);
+    sprintf(message, "Все соединены!\nHops:%d/%d\nto !%x", mp.hop_start - mp.hop_limit, mp.hop_start, mp.from);
 
   reply->decoded.payload.size = strlen(message);
   memcpy(reply->decoded.payload.bytes, message, reply->decoded.payload.size);
