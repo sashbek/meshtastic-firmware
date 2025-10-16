@@ -43,7 +43,8 @@ bool PongModule::wantPacket(const meshtastic_MeshPacket *p)
   if (strcasecmp("Лейн!", (const char*)p->decoded.payload.bytes) == 0
     || strcasecmp("Лейн", (const char*)p->decoded.payload.bytes) == 0
     || strcasecmp("Lain", (const char*)p->decoded.payload.bytes) == 0
-    || strcasecmp("Lain!", (const char*)p->decoded.payload.bytes) == 0) {
+    || strcasecmp("Lain!", (const char*)p->decoded.payload.bytes) == 0
+    || strcasecmp("Ping", (const char*)p->decoded.payload.bytes) == 0) {
     return true;
   }
 
