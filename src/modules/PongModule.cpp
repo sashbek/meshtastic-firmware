@@ -18,10 +18,10 @@ ProcessMessage PongModule::handleReceived(const meshtastic_MeshPacket &mp)
 
   if (mp.hop_start == mp.hop_limit)
     // Direct ping, SNR/RSSI can be helpful
-    sprintf(message, "Pong to !%x\nR:%d S:%.2f", mp.from, mp.rx_rssi, mp.rx_snr);
+    sprintf(message, "Нет.\nR:%d S:%.2f, глупый %x!", mp.rx_rssi, mp.rx_snr, mp.from);
   else
     // Ping was obtained via mesh, SNR/RSSI can't be helpful, but hop count can
-    sprintf(message, "Pong to !%x\nHops:%d/%d", mp.from, mp.hop_start - mp.hop_limit, mp.hop_start);
+    sprintf(message, "Нет.\nHops:%d/%d, глупый %x!", mp.hop_start - mp.hop_limit, mp.hop_start, mp.from);
 
   reply->decoded.payload.size = strlen(message);
   memcpy(reply->decoded.payload.bytes, message, reply->decoded.payload.size);
@@ -40,7 +40,11 @@ bool PongModule::wantPacket(const meshtastic_MeshPacket *p)
       return false;
   }
 
-  if (strcasecmp("Ping", (const char*)p->decoded.payload.bytes) == 0) {
+  if (strcasecmp("Помоги мне!", (const char*)p->decoded.payload.bytes) == 0
+    || strcasecmp("Помоги мне", (const char*)p->decoded.payload.bytes) == 0
+    || strcasecmp("Помоги мне, Аска!", (const char*)p->decoded.payload.bytes) == 0
+    || strcasecmp("Помоги мне, Аска", (const char*)p->decoded.payload.bytes) == 0)
+  {
     return true;
   }
 
