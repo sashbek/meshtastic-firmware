@@ -16,6 +16,21 @@ ProcessMessage PongModule::handleReceived(const meshtastic_MeshPacket &mp)
   reply->to = NODENUM_BROADCAST;
   reply->want_ack = true;
 
+  bool has_name = false;
+  String name = "";
+  meshtastic_NodeInfoLite* node_from = nodeDB->getMeshNode(mp.from);
+
+  if (node_from != nullptr
+    && node_from->has_user
+  )
+  {
+    name = String(node_from->user.short_name);
+    if (mp.to != NODENUM_BROADCAST) {
+      reply->to = mp.from;
+    }
+    has_name = true;
+  }
+
   if (mp.hop_start == mp.hop_limit)
     // Direct ping, SNR/RSSI can be helpful
     sprintf(message, "Не имеет значения!\nR:%d S:%.2f\nto !%x", mp.rx_rssi, mp.rx_snr, mp.from);
