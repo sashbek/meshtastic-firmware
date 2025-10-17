@@ -3,6 +3,7 @@
 #include "MeshTypes.h"
 #include "meshtastic/mesh.pb.h"
 #include "meshtastic/portnums.pb.h"
+#include "../mesh/NodeDB.h"
 
 #include <cstdio>
 #include <cstring>
