@@ -26,21 +26,39 @@ ProcessMessage PongModule::handleReceived(const meshtastic_MeshPacket &mp)
   )
   {
     name = String(node_from->user.short_name);
+    if (mp.to != NODENUM_BROADCAST) {
+      reply->to = mp.from;
+    }
     has_name = true;
   }
 
-  if (mp.hop_start == mp.hop_limit)
+  if (mp.hop_start == mp.hop_limit) {
     // Direct ping, SNR/RSSI can be helpful
-    if (has_name)
-      sprintf(message, "Нет.\nR:%d S:%.2f, глупый %s! (to %x)", mp.rx_rssi, mp.rx_snr, name, mp.from);
-    else
-      sprintf(message, "Нет.\nR:%d S:%.2f, глупый %x!", mp.rx_rssi, mp.rx_snr, mp.from);
-  else
+    if (reply->to == NODENUM_BROADCAST) {
+      if (has_name)
+        sprintf(message, "Нет.\nR:%d S:%.2f, %s (to %x)", mp.rx_rssi, mp.rx_snr, name, mp.from);
+      else
+        sprintf(message, "Нет.\nR:%d S:%.2f, %x", mp.rx_rssi, mp.rx_snr, mp.from);
+    } else {
+      if (has_name)
+        sprintf(message, "Нет.\nR:%d S:%.2f, глупый %s! (to %x)", mp.rx_rssi, mp.rx_snr, name, mp.from);
+      else
+        sprintf(message, "Нет.\nR:%d S:%.2f, глупый %x!", mp.rx_rssi, mp.rx_snr, mp.from);
+    }
+  } else {
     // Ping was obtained via mesh, SNR/RSSI can't be helpful, but hop count can
-    if (has_name)
-      sprintf(message, "Нет.\nHops:%d/%d, глупый %s! (to %x)", mp.hop_start - mp.hop_limit, mp.hop_start, name, mp.from);
-    else 
-      sprintf(message, "Нет.\nHops:%d/%d, глупый %x!", mp.hop_start - mp.hop_limit, mp.hop_start, mp.from);
+    if (reply->to == NODENUM_BROADCAST) {
+      if (has_name)
+        sprintf(message, "Нет.\nHops:%d/%d, %s (to %x)", mp.hop_start - mp.hop_limit, mp.hop_start, name, mp.from);
+      else 
+        sprintf(message, "Нет.\nHops:%d/%d, %x", mp.hop_start - mp.hop_limit, mp.hop_start, mp.from);
+    } else {
+      if (has_name)
+        sprintf(message, "Нет.\nHops:%d/%d, глупый %s (to %x)", mp.hop_start - mp.hop_limit, mp.hop_start, name, mp.from);
+      else 
+        sprintf(message, "Нет.\nHops:%d/%d, глупый %x", mp.hop_start - mp.hop_limit, mp.hop_start, mp.from);
+    }
+  }
   reply->decoded.payload.size = strlen(message);
   memcpy(reply->decoded.payload.bytes, message, reply->decoded.payload.size);
 
@@ -62,8 +80,13 @@ bool PongModule::wantPacket(const meshtastic_MeshPacket *p)
     || strcasecmp("Помоги мне", (const char*)p->decoded.payload.bytes) == 0
     || strcasecmp("Помоги мне, Аска!", (const char*)p->decoded.payload.bytes) == 0
     || strcasecmp("Помоги мне, Аска", (const char*)p->decoded.payload.bytes) == 0
-    || strcasecmp("Ping", (const char*)p->decoded.payload.bytes) == 0)
+    || strcasecmp("Аска", (const char*)p->decoded.payload.bytes) == 0)
   {
+    return true;
+  }
+
+  if (strcasecmp("Ping", (const char*)p->decoded.payload.bytes) == 0
+    && p->to != NODENUM_BROADCAST) {
     return true;
   }
 
