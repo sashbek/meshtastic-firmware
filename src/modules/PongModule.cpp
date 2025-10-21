@@ -16,6 +16,18 @@ ProcessMessage PongModule::handleReceived(const meshtastic_MeshPacket &mp)
   reply->to = NODENUM_BROADCAST;
   reply->want_ack = true;
 
+  meshtastic_NodeInfoLite* node_from = nodeDB->getMeshNode(mp.from);
+
+  if (node_from != nullptr
+    && node_from->has_user
+  )
+  {
+    if (mp.to != NODENUM_BROADCAST) {
+      reply->to = mp.from;
+    }
+  }
+
+
   if (mp.hop_start == mp.hop_limit)
     // Direct ping, SNR/RSSI can be helpful
     sprintf(message, "Pong to !%x\nR:%d S:%.2f", mp.from, mp.rx_rssi, mp.rx_snr);
