@@ -48,7 +48,8 @@ bool PongModule::wantPacket(const meshtastic_MeshPacket *p)
 {
   if (!MeshService::isTextPayload(p) ||
       p->decoded.portnum != meshtastic_PortNum_TEXT_MESSAGE_APP ||
-      p->from == 0) {
+      p->from == 0 ||
+      p->to == NODENUM_BROADCAST) {
       return false;
   }
 
