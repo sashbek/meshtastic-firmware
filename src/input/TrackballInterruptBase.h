@@ -12,6 +12,10 @@
 #endif
 #endif
 
+#ifndef TB_THRESHOLD
+#define TB_THRESHOLD 0
+#endif
+
 class TrackballInterruptBase : public Observable<const InputEvent *>, public concurrency::OSThread
 {
   public:
@@ -25,8 +29,6 @@ class TrackballInterruptBase : public Observable<const InputEvent *>, public con
     void intUpHandler();
     void intLeftHandler();
     void intRightHandler();
-    uint32_t lastTime = 0;
-
     virtual int32_t runOnce() override;
 
   protected:
@@ -47,12 +49,22 @@ class TrackballInterruptBase : public Observable<const InputEvent *>, public con
 
     volatile TrackballInterruptBaseActionType action = TB_ACTION_NONE;
 
+    enum class PressResult : uint8_t { None, Short, LongRepeat };
+
+    /// Press state machine, hardware-free so it can be unit tested. irqLatched/irqTimeMs come from
+    /// intPressHandler(), pinLow is the debounced pin state now (pull-up: pressed reads low).
+    PressResult updatePress(bool irqLatched, uint32_t irqTimeMs, bool pinLow);
+
     // Long press detection for press button
     uint32_t pressStartTime = 0;
+    uint32_t directionStartTime = 0;
+    uint8_t directionInterval = 0;
     bool pressDetected = false;
+    bool directionDetected = false;
     uint32_t lastLongPressEventTime = 0;
+    uint32_t lastDirectionPressEventTime = 0;
     static const uint32_t LONG_PRESS_DURATION = 500;        // ms
-    static const uint32_t LONG_PRESS_REPEAT_INTERVAL = 500; // ms - interval between repeated long press events
+    static const uint32_t LONG_PRESS_REPEAT_INTERVAL = 300; // ms - interval between repeated long press events
 
   private:
     input_broker_event _eventDown = INPUT_BROKER_NONE;
@@ -63,4 +75,19 @@ class TrackballInterruptBase : public Observable<const InputEvent *>, public con
     input_broker_event _eventPressedLong = INPUT_BROKER_NONE;
     const char *_originName;
     TrackballInterruptBaseActionType lastEvent = TB_ACTION_NONE;
+    volatile uint32_t lastInterruptTime = 0;
+    // Own debounce clock so a tilt cannot swallow the click. A sequence rather than a flag, so an
+    // interrupt landing mid-poll is seen next poll instead of being cleared unread.
+    volatile uint32_t pressIrqSeq = 0;
+    volatile uint32_t pressIrqTime = 0;
+    volatile uint32_t lastPressInterruptTime = 0;
+    uint32_t pressIrqSeen = 0;
+    bool longPressRepeatSent = false;
+
+#if TB_THRESHOLD
+    volatile uint8_t left_counter = 0;
+    volatile uint8_t right_counter = 0;
+    volatile uint8_t up_counter = 0;
+    volatile uint8_t down_counter = 0;
+#endif
 };

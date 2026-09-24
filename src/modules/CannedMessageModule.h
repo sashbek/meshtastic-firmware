@@ -27,10 +27,6 @@ enum CannedMessageModuleIconType { shift, backspace, space, enter };
 #define CANNED_MESSAGE_MODULE_MESSAGE_MAX_COUNT 50
 #define CANNED_MESSAGE_MODULE_MESSAGES_SIZE 800
 
-#ifndef CANNED_MESSAGE_MODULE_ENABLE
-#define CANNED_MESSAGE_MODULE_ENABLE 0
-#endif
-
 // ============================
 //        Data Structures
 // ============================
@@ -59,7 +55,6 @@ class CannedMessageModule : public SinglePortModule, public Observable<const UIF
     CannedMessageModule();
 
     void LaunchWithDestination(NodeNum, uint8_t newChannel = 0);
-    void LaunchRepeatDestination();
     void LaunchFreetextWithDestination(NodeNum, uint8_t newChannel = 0);
 
     // === Emote Picker navigation ===
@@ -74,12 +69,10 @@ class CannedMessageModule : public SinglePortModule, public Observable<const UIF
 
     // === State/UI ===
     bool shouldDraw();
-    bool hasMessages();
-    void showTemporaryMessage(const String &message);
     void resetSearch();
     void updateDestinationSelectionList();
     void drawDestinationSelectionScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
-    bool isCharInputAllowed() const;
+    bool isFreeTextActive() const { return runState == CANNED_MESSAGE_RUN_STATE_FREETEXT; }
     String drawWithCursor(String text, int cursor);
 
     // === Emote Picker ===
@@ -153,10 +146,9 @@ class CannedMessageModule : public SinglePortModule, public Observable<const UIF
     unsigned long lastUpdateMillis = 0;
     String searchQuery;
     String freetext;
-    String temporaryMessage;
 
     // === Message Storage ===
-    char messageStore[CANNED_MESSAGE_MODULE_MESSAGES_SIZE + 1];
+    char messageBuffer[CANNED_MESSAGE_MODULE_MESSAGES_SIZE + 1];
     char *messages[CANNED_MESSAGE_MODULE_MESSAGE_MAX_COUNT];
     int messagesCount = 0;
     int currentMessageIndex = -1;
@@ -167,14 +159,11 @@ class CannedMessageModule : public SinglePortModule, public Observable<const UIF
     NodeNum lastSentNode = 0;             // Tracks the most recent node we sent a message to (for UI display)
     ChannelIndex channel = 0;             // Channel index used when sending a message
 
-    bool ack = false;               // True = ACK received, False = NACK or failed
-    bool waitingForAck = false;     // True if we're expecting an ACK and should monitor routing packets
-    bool lastAckWasRelayed = false; // True if the ACK was relayed through intermediate nodes
-    uint8_t lastAckHopStart = 0;    // Hop start value from the received ACK packet
-    uint8_t lastAckHopLimit = 0;    // Hop limit value from the received ACK packet
-
-    float lastRxSnr = 0;    // SNR from last received ACK (used for diagnostics/UI)
-    int32_t lastRxRssi = 0; // RSSI from last received ACK (used for diagnostics/UI)
+    bool ack = false;           // True = ACK received, False = NACK or failed
+    bool waitingForAck = false; // True if we're expecting an ACK and should monitor routing packets
+    float lastRxSnr = 0;        // SNR from last received ACK (used for diagnostics/UI)
+    int32_t lastRxRssi = 0;     // RSSI from last received ACK (used for diagnostics/UI)
+    uint32_t lastRequestId = 0; // tracks the request_id of our last sent packet
 
     // === State Tracking ===
     cannedMessageModuleRunState runState = CANNED_MESSAGE_RUN_STATE_INACTIVE;
@@ -192,6 +181,8 @@ class CannedMessageModule : public SinglePortModule, public Observable<const UIF
     int charSet = 0; // 0=ABC, 1=123
 #endif
 
+    void updateState(cannedMessageModuleRunState, bool shouldRequestFocus = false);
+
     bool isUpEvent(const InputEvent *event);
     bool isDownEvent(const InputEvent *event);
     bool isSelectEvent(const InputEvent *event);
@@ -199,6 +190,11 @@ class CannedMessageModule : public SinglePortModule, public Observable<const UIF
     int handleDestinationSelectionInput(const InputEvent *event, bool isUp, bool isDown, bool isSelect);
     bool handleMessageSelectorInput(const InputEvent *event, bool isUp, bool isDown, bool isSelect);
     bool handleFreeTextInput(const InputEvent *event);
+    // Opens the on-screen keyboard prompt for the current destination.
+    // Returns false when this device has no on-screen keyboard.
+    bool showOnScreenKeyboard();
+    // Set when a menu requested on-screen-keyboard compose; serviced by runOnce().
+    bool pendingOskLaunch = false;
 
 #if defined(USE_VIRTUAL_KEYBOARD)
     Letter keyboard[2][4][10] = {{{{"Q", 20, 0, 0, 0, 0},

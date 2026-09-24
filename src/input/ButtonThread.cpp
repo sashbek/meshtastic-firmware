@@ -6,13 +6,13 @@
 #include "GPS.h"
 #endif
 #include "MeshService.h"
+#include "Power.h"
 #include "RadioLibInterface.h"
 #include "buzz.h"
 #include "input/InputBroker.h"
 #include "main.h"
 #include "modules/CannedMessageModule.h"
 #include "modules/ExternalNotificationModule.h"
-#include "power.h"
 #include "sleep.h"
 #ifdef ARCH_PORTDUINO
 #include "platform/portduino/PortduinoGlue.h"
@@ -37,6 +37,9 @@ bool ButtonThread::initButton(const ButtonConfig &config)
     _activeLow = config.activeLow;
     _touchQuirk = config.touchQuirk;
     _intRoutine = config.intRoutine;
+    _pressHandler = config.onPress;
+    _releaseHandler = config.onRelease;
+    _suppressLeadUp = config.suppressLeadUpSound;
     _longLongPress = config.longLongPress;
 
     userButton = OneButton(config.pinNumber, config.activeLow, config.activePullup);
@@ -99,7 +102,9 @@ bool ButtonThread::initButton(const ButtonConfig &config)
 #endif
     userButton.setPressMs(_longPressTime);
 
-    if (screen) {
+    // The 20ms window a screen normally gets closes before a second click can land, so boards
+    // binding double or multi click need the full one.
+    if (screen && _doublePress == INPUT_BROKER_NONE && _triplePress == INPUT_BROKER_NONE) {
         userButton.setClickMs(20);
     } else {
         userButton.setClickMs(BUTTON_CLICK_MS);
@@ -133,14 +138,20 @@ int32_t ButtonThread::runOnce()
 
     // Detect start of button press
     if (buttonCurrentlyPressed && !buttonWasPressed) {
+        if (_pressHandler)
+            _pressHandler();
         buttonPressStartTime = millis();
         leadUpPlayed = false;
         leadUpSequenceActive = false;
         resetLeadUpSequence();
     }
+#ifdef INPUT_DEBUG
+    if (buttonCurrentlyPressed)
+        LOG_WARN("Button held for %u ms", millis() - buttonPressStartTime);
+#endif
 
     // Progressive lead-up sound system
-    if (buttonCurrentlyPressed && (millis() - buttonPressStartTime) >= BUTTON_LEADUP_MS) {
+    if (!_suppressLeadUp && buttonCurrentlyPressed && (millis() - buttonPressStartTime) >= BUTTON_LEADUP_MS) {
 
         // Start the progressive sequence if not already active
         if (!leadUpSequenceActive) {
@@ -160,6 +171,8 @@ int32_t ButtonThread::runOnce()
 
     // Reset when button is released
     if (!buttonCurrentlyPressed && buttonWasPressed) {
+        if (_releaseHandler)
+            _releaseHandler();
         leadUpSequenceActive = false;
         resetLeadUpSequence();
     }
@@ -214,9 +227,8 @@ int32_t ButtonThread::runOnce()
             break;
         }
 
-        case BUTTON_EVENT_DOUBLE_PRESSED: { // not wired in if screen detected
-            LOG_INFO("Double press!");
-
+        case BUTTON_EVENT_DOUBLE_PRESSED: { // only on boards binding ButtonConfig::doublePress
+            LOG_INFO("Double press");
             // Reset combination tracking
             waitingForLongPress = false;
 
@@ -241,7 +253,21 @@ int32_t ButtonThread::runOnce()
                 this->notifyObservers(&evt);
                 playComboTune();
                 break;
-
+#if !HAS_SCREEN
+            case 4:
+                if (moduleConfig.external_notification.enabled && externalNotificationModule) {
+                    externalNotificationModule->setMute(!externalNotificationModule->getMute());
+                    IF_SCREEN(if (!externalNotificationModule->getMute()) externalNotificationModule->stopNow();)
+                    if (externalNotificationModule->getMute()) {
+                        LOG_INFO("Temporarily Muted");
+                        play4ClickDown(); // Disable tone
+                    } else {
+                        LOG_INFO("Unmuted");
+                        play4ClickUp(); // Enable tone
+                    }
+                }
+                break;
+#endif
             // No valid multipress action
             default:
                 break;
@@ -250,12 +276,13 @@ int32_t ButtonThread::runOnce()
             break;
         } // end multipress event
 
-            // Do actual shutdown when button released, otherwise the button release
-        // may wake the board immediatedly.
+        // Do actual shutdown when button released, otherwise the button release
+        // may wake the board immediately.
         case BUTTON_EVENT_LONG_RELEASED: {
 
             LOG_INFO("LONG PRESS RELEASE AFTER %u MILLIS", millis() - buttonPressStartTime);
-            if (millis() > 30000 && _longLongPress != INPUT_BROKER_NONE &&
+            // Require press started after boot holdoff to avoid phantom shutdown from floating pins
+            if (millis() > 30000 && buttonPressStartTime > 30000 && _longLongPress != INPUT_BROKER_NONE &&
                 (millis() - buttonPressStartTime) >= _longLongPressTime && leadUpPlayed) {
                 evt.inputEvent = _longLongPress;
                 this->notifyObservers(&evt);
@@ -289,7 +316,8 @@ int32_t ButtonThread::runOnce()
 void ButtonThread::attachButtonInterrupts()
 {
     // Interrupt for user button, during normal use. Improves responsiveness.
-    attachInterrupt(_pinNum, _intRoutine, CHANGE);
+    if (_intRoutine != nullptr)
+        attachInterrupt(_pinNum, _intRoutine, CHANGE);
 }
 
 /*
@@ -298,7 +326,8 @@ void ButtonThread::attachButtonInterrupts()
  */
 void ButtonThread::detachButtonInterrupts()
 {
-    detachInterrupt(_pinNum);
+    if (_intRoutine != nullptr)
+        detachInterrupt(_pinNum);
 }
 
 #ifdef ARCH_ESP32

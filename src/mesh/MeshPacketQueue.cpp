@@ -1,5 +1,7 @@
 #include "MeshPacketQueue.h"
 #include "NodeDB.h"
+#include "Throttle.h"
+#include "UptimeClock.h"
 #include "configuration.h"
 #include <assert.h>
 
@@ -178,6 +180,34 @@ bool MeshPacketQueue::replaceLowerPriorityPacket(meshtastic_MeshPacket *p)
                      refPacket->id, p->id);
             queue.erase(it);
             packetPool.release(refPacket);
+            // Insert the new packet in the correct order
+            enqueue(p);
+            return true;
+        }
+    }
+
+    if (backPacket->tx_after) {
+        // Check if there's a late packet at the queue end
+        const uint32_t now = Time::getMillis();
+        // Elapsed times only order two deadlines that have both passed: a future one subtracts to a
+        // near-2^32 elapsed and would read as the most overdue packet in the queue.
+        const uint32_t backElapsed = now - backPacket->tx_after;
+        const bool newGoesFirst =
+            !p->tx_after || (Throttle::deadlinePassedAt(now, p->tx_after) && backElapsed < (uint32_t)(now - p->tx_after));
+        if (Throttle::deadlinePassedAt(now, backPacket->tx_after) && newGoesFirst) {
+            int32_t dt = -(int32_t)backElapsed;
+            if (p->tx_after) {
+                LOG_WARN("Dropping late packet 0x%08x with TX delay %dms to make room in the TX queue for packet 0x%08x with "
+                         "TX delay %ums",
+                         backPacket->id, dt, p->id, p->tx_after - now);
+
+            } else {
+                LOG_WARN("Dropping late packet 0x%08x with TX delay %dms to make room in the TX queue for packet 0x%08x "
+                         "with no TX delay",
+                         backPacket->id, dt, p->id);
+            }
+            queue.pop_back();
+            packetPool.release(backPacket);
             // Insert the new packet in the correct order
             enqueue(p);
             return true;

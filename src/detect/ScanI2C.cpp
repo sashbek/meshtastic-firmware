@@ -25,26 +25,33 @@ ScanI2C::FoundDevice ScanI2C::firstScreen() const
 
 ScanI2C::FoundDevice ScanI2C::firstRTC() const
 {
-    ScanI2C::DeviceType types[] = {RTC_RV3028, RTC_PCF8563, RTC_RX8130CE};
-    return firstOfOrNONE(3, types);
+    ScanI2C::DeviceType types[] = {RTC_RV3028, RTC_PCF8563, RTC_PCF85063, RTC_RX8130CE};
+    return firstOfOrNONE(4, types);
 }
 
 ScanI2C::FoundDevice ScanI2C::firstKeyboard() const
 {
-    ScanI2C::DeviceType types[] = {CARDKB, TDECKKB, BBQ10KB, RAK14004, MPR121KB, TCA8418KB};
-    return firstOfOrNONE(6, types);
+    ScanI2C::DeviceType types[] = {CARDKB, TDECKKB, BBQ10KB, RAK14004, MPR121KB, TCA8418KB, STC8HKB};
+    return firstOfOrNONE(7, types);
 }
 
 ScanI2C::FoundDevice ScanI2C::firstAccelerometer() const
 {
-    ScanI2C::DeviceType types[] = {MPU6050, LIS3DH, BMA423, LSM6DS3, BMX160, STK8BAXX, ICM20948, QMA6100P, BMM150};
-    return firstOfOrNONE(9, types);
+    ScanI2C::DeviceType types[] = {MPU6050, LIS3DH, SC7A20,   BMA423,    LSM6DS3,    BMX160,   STK8BAXX, ICM20948,
+                                   BMM150,  BMI270, BHI260AP, ICM42607P, ISM330DHCX, QMA6100P, QMI8658};
+    return firstOfOrNONE(15, types);
+}
+
+ScanI2C::FoundDevice ScanI2C::firstMagnetometer() const
+{
+    ScanI2C::DeviceType types[] = {MMC5983MA, IIS2MDCTR, QMC6309};
+    return firstOfOrNONE(3, types);
 }
 
 ScanI2C::FoundDevice ScanI2C::firstAQI() const
 {
-    ScanI2C::DeviceType types[] = {PMSA0031, SCD4X};
-    return firstOfOrNONE(2, types);
+    ScanI2C::DeviceType types[] = {PMSA003I, SEN5X, SEN6X, SCD4X, SFA30};
+    return firstOfOrNONE(5, types);
 }
 
 ScanI2C::FoundDevice ScanI2C::firstRGBLED() const

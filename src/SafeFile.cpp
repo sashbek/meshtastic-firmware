@@ -7,10 +7,6 @@ static File openFile(const char *filename, bool fullAtomic)
 {
     concurrency::LockGuard g(spiLock);
     LOG_DEBUG("Opening %s, fullAtomic=%d", filename, fullAtomic);
-#ifdef ARCH_NRF52
-    FSCom.remove(filename);
-    return FSCom.open(filename, FILE_O_WRITE);
-#endif
     if (!fullAtomic) {
         FSCom.remove(filename); // Nuke the old file to make space (ignore if it !exists)
     }
@@ -18,10 +14,17 @@ static File openFile(const char *filename, bool fullAtomic)
     String filenameTmp = filename;
     filenameTmp += ".tmp";
 
-    // FIXME: If we are doing a full atomic write, we may need to remove the old tmp file now
-    // if (fullAtomic) {
-    //     FSCom.remove(filename);
-    // }
+    // FILE_O_WRITE appends on Adafruit_LittleFS (nRF52) and STM32 LittleFS, so a tmp left by an interrupted
+    // write must go first. exists() guards it: a bare remove() of a missing file logs on Portduino.
+    if (FSCom.exists(filenameTmp.c_str())) {
+        LOG_DEBUG("Remove stale %s", filenameTmp.c_str());
+        // Opening anyway would append to the stale bytes, and the XOR readback is 8 bits wide, so
+        // polluted content has a real chance of verifying and being renamed over the good file.
+        if (!FSCom.remove(filenameTmp.c_str())) {
+            LOG_ERROR("Can't remove stale %s", filenameTmp.c_str());
+            return File();
+        }
+    }
 
     // clear any previous LFS errors
     return FSCom.open(filenameTmp.c_str(), FILE_O_WRITE);
@@ -54,7 +57,7 @@ size_t SafeFile::write(const uint8_t *buffer, size_t size)
 }
 
 /**
- * Atomically close the file (deleting any old versions) and readback the contents to confirm the hash matches
+ * Atomically close the file (overwriting any old version) and readback the contents to confirm the hash matches
  *
  * @return false for failure
  */
@@ -67,25 +70,14 @@ bool SafeFile::close()
     f.close();
     spiLock->unlock();
 
-#ifdef ARCH_NRF52
-    return true;
-#endif
     if (!testReadback())
         return false;
 
-    { // Scope for lock
-        concurrency::LockGuard g(spiLock);
-        // brief window of risk here ;-)
-        if (fullAtomic && FSCom.exists(filename.c_str()) && !FSCom.remove(filename.c_str())) {
-            LOG_ERROR("Can't remove old pref file");
-            return false;
-        }
-    }
-
+    // Rename or overwrite (atomic operation)
     String filenameTmp = filename;
     filenameTmp += ".tmp";
     if (!renameFile(filenameTmp.c_str(), filename.c_str())) {
-        LOG_ERROR("Error: can't rename new pref file");
+        LOG_ERROR("Can't rename new pref file");
         return false;
     }
 

@@ -30,6 +30,7 @@
 
 // vibration motor
 #define PIN_VIBRATION 2
+#define HAS_DRV2605 1
 
 // Have SPI interface SD card slot
 #define HAS_SDCARD
@@ -43,7 +44,6 @@
 
 // TCA8418 keyboard
 #define KB_BL_PIN 42
-#define CANNED_MESSAGE_MODULE_ENABLE 1
 
 // microphone PCM5102A
 #define PCM5102A_SCK 47
@@ -55,7 +55,8 @@
 
 // gyroscope BHI260AP
 #define BOARD_1V8_EN 38
-#define HAS_BHI260AP
+// Disabled until a SensorLib replacement is available
+// #define HAS_BHI260AP
 
 // battery charger BQ25896
 #define HAS_PPM 1
@@ -100,3 +101,5 @@
 #define MODEM_DTR 8
 #define MODEM_RX 10
 #define MODEM_TX 11
+
+#define HAS_PHYSICAL_KEYBOARD 1
