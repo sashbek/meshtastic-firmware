@@ -100,8 +100,6 @@ void initVariant()
     digitalWrite(PIN_LED1, LOW);
     pinMode(PIN_LED2, OUTPUT);
     digitalWrite(PIN_LED2, LOW);
-    pinMode(PIN_LED2, OUTPUT);
-    // digitalWrite(LED_PIN, LOW);
 
     pinMode(GPS_EN, OUTPUT);
     digitalWrite(GPS_EN, HIGH);

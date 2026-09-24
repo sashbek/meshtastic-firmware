@@ -1,28 +1,176 @@
+#include "UptimeClock.h"
 #include "configuration.h"
+#include "mesh/Throttle.h"
 #include <Adafruit_TinyUSB.h>
 #include <Adafruit_nRFCrypto.h>
 #include <InternalFileSystem.h>
 #include <SPI.h>
 #include <Wire.h>
+
+#define APP_WATCHDOG_SECS 90
+#define NRFX_WDT_ENABLED 1
+#define NRFX_WDT0_ENABLED 1
+#define NRFX_WDT_CONFIG_NO_IRQ 1
+#include "nrfx_power.h"
 #include <assert.h>
 #include <ble_gap.h>
 #include <memory.h>
+#include <nrfx_wdt.c>
+#include <nrfx_wdt.h>
 #include <stdio.h>
 // #include <Adafruit_USBD_Device.h>
+#include "HardwareRNG.h"
 #include "NodeDB.h"
+#include "Power.h"
 #include "PowerMon.h"
 #include "error.h"
 #include "main.h"
 #include "meshUtils.h"
+#include <power/PowerHAL.h>
+
+#include "Nrf52SaadcLock.h"
+#include "SPILock.h"
+#include "concurrency/LockGuard.h"
+#include "flash/flash_nrf5x.h"
+#include <hal/nrf_lpcomp.h>
 
 #ifdef BQ25703A_ADDR
 #include "BQ25713.h"
 #endif
 
+// WARNING! THRESHOLD + HYSTERESIS should be less than regulated VDD voltage - which depends on board
+// and is 3.0 or 3.3V. Also VDD likes to read values like 2.9999 so make sure you account for that
+// otherwise board will not boot at all. Before you modify this part - please triple read NRF52840 power design
+// section in datasheet and you understand how REG0 and REG1 regulators work together.
+#ifndef SAFE_VDD_VOLTAGE_THRESHOLD
+#define SAFE_VDD_VOLTAGE_THRESHOLD 2.7
+#endif
+
+// hysteresis value
+#ifndef SAFE_VDD_VOLTAGE_THRESHOLD_HYST
+#define SAFE_VDD_VOLTAGE_THRESHOLD_HYST 0.2
+#endif
+
+uint16_t getVDDVoltage();
+
+// Weak empty variant shutdown prep function.
+// May be redefined by variant files.
+// noinline: same reason as variant_enableBatteryLpcompWake() below -- weak default and call
+// site are in this file, so LTO would inline the empty body and drop the variant's override.
+__attribute__((noinline)) void variant_shutdown() __attribute__((weak));
+__attribute__((noinline)) void variant_shutdown() {}
+
+// Optional variant hook called each nrf52Loop(); e.g. for low-VDD System OFF.
+__attribute__((noinline)) void variant_nrf52LoopHook(void) __attribute__((weak));
+__attribute__((noinline)) void variant_nrf52LoopHook(void) {}
+
+// Return false to skip LPCOMP wake when entering System OFF (e.g. user CLI shutdown).
+// noinline: weak default and call site are in this file; without it GCC may inline the
+// weak body and never link the strong override from variant.cpp.
+__attribute__((noinline)) bool variant_enableBatteryLpcompWake() __attribute__((weak));
+__attribute__((noinline)) bool variant_enableBatteryLpcompWake()
+{
+    return true;
+}
+
+static nrfx_wdt_t nrfx_wdt = NRFX_WDT_INSTANCE(0);
+static nrfx_wdt_channel_id nrfx_wdt_channel_id_nrf52_main;
+
+// This is a public global so that the debugger can set it to false automatically from our gdbinit
+// @phaseloop comment: most part of codebase, including filesystem flash driver depend on softdevice
+// methods so disabling it may actually crash thing. Proceed with caution.
+
+bool useSoftDevice = true; // Set to false for easier debugging
+
 static inline void debugger_break(void)
 {
     __asm volatile("bkpt #0x01\n\t"
                    "mov pc, lr\n\t");
+}
+
+// PowerHAL NRF52 specific function implementations
+bool powerHAL_isVBUSConnected()
+{
+    return NRF_POWER->USBREGSTATUS & POWER_USBREGSTATUS_VBUSDETECT_Msk;
+}
+
+bool powerHAL_isPowerLevelSafe()
+{
+    static bool powerLevelSafe = true;
+
+#ifdef SAFE_VDD_VOLTAGE_THRESHOLD_MV
+    uint16_t threshold = SAFE_VDD_VOLTAGE_THRESHOLD_MV;
+#else
+    uint16_t threshold = (uint16_t)(SAFE_VDD_VOLTAGE_THRESHOLD * 1000.0f + 0.5f); // convert V to mV
+#endif
+#ifdef SAFE_VDD_VOLTAGE_THRESHOLD_HYST_MV
+    uint16_t hysteresis = SAFE_VDD_VOLTAGE_THRESHOLD_HYST_MV;
+#else
+    uint16_t hysteresis = (uint16_t)(SAFE_VDD_VOLTAGE_THRESHOLD_HYST * 1000.0f + 0.5f);
+#endif
+
+    if (powerLevelSafe) {
+        if (getVDDVoltage() < threshold) {
+            powerLevelSafe = false;
+        }
+    } else {
+        // power level is only safe again when it raises above threshold + hysteresis
+        if (getVDDVoltage() >= (threshold + hysteresis)) {
+            powerLevelSafe = true;
+        }
+    }
+
+    return powerLevelSafe;
+}
+
+void powerHAL_platformInit()
+{
+
+    // Enable POF power failure comparator. It will prevent writing to NVMC flash when supply voltage is too low.
+    // Set to some low value as last resort - powerHAL_isPowerLevelSafe uses different method and should manage proper node
+    // behaviour on its own.
+
+    // POFWARN is pretty useless for node power management because it triggers only once and clearing this event will not
+    // re-trigger it again until voltage rises to safe level and drops again. So we will use SAADC routed to VDD to read safely
+    // voltage.
+
+    // @phaseloop: I disable POFCON for now because it seems to be unreliable or buggy. Even when set at 2.0V it
+    // triggers below 2.8V and corrupts data when pairing bluetooth - because it prevents filesystem writes and
+    // adafruit BLE library triggers lfs_assert which reboots node and formats filesystem.
+    // I did experiments with bench power supply and no matter what is set to POFCON, it always triggers right below
+    // 2.8V. I compared raw registry values with datasheet.
+
+    NRF_POWER->POFCON =
+        ((POWER_POFCON_THRESHOLD_V22 << POWER_POFCON_THRESHOLD_Pos) | (POWER_POFCON_POF_Enabled << POWER_POFCON_POF_Pos));
+
+    // remember to always match VBAT_AR_INTERNAL with AREF_VALUE in variant definition file
+#ifdef VBAT_AR_INTERNAL
+    analogReference(VBAT_AR_INTERNAL);
+#else
+    analogReference(AR_INTERNAL); // 3.6V
+#endif
+}
+
+// get VDD voltage (in millivolts)
+uint16_t getVDDVoltage()
+{
+    concurrency::LockGuard guard(concurrency::nrf52SaadcLock);
+
+    // Match battery read resolution; SAADC is shared with AnalogBatteryLevel in Power.cpp.
+    analogReadResolution(BATTERY_SENSE_RESOLUTION_BITS);
+
+    // VDD range on NRF52840 is 1.8-3.3V so we need to remap analog reference to 3.6V
+    analogReference(AR_INTERNAL);
+
+    uint16_t vddADCRead = analogReadVDD();
+    float voltage = ((1000 * 3.6) / pow(2, BATTERY_SENSE_RESOLUTION_BITS)) * vddADCRead;
+
+// restore default battery reading reference
+#ifdef VBAT_AR_INTERNAL
+    analogReference(VBAT_AR_INTERNAL);
+#endif
+
+    return voltage;
 }
 
 bool loopCanSleep()
@@ -37,9 +185,18 @@ bool loopCanSleep()
 void __attribute__((noreturn)) __assert_func(const char *file, int line, const char *func, const char *failedexpr)
 {
     LOG_ERROR("assert failed %s: %d, %s, test=%s", file, line, func, failedexpr);
-    // debugger_break(); FIXME doesn't work, possibly not for segger
+    Serial.flush(); // the reset below would cut the message short
+    // debugger_break(); FIXME doesn't work, possibly for segger
     // Reboot cpu
     NVIC_SystemReset();
+}
+
+// Bluefruit LESC pairing only uses secp256r1. Replacing the cc310 lookup keeps the parameter
+// tables of its ten other curves (~7.4 KB) from being linked through ecDomainsFuncP.
+extern "C" const CRYS_ECPKI_Domain_t *SaSi_ECPKI_GetSecp256r1DomainP(void);
+extern "C" const CRYS_ECPKI_Domain_t *CRYS_ECPKI_GetEcDomain(CRYS_ECPKI_DomainID_t domainId)
+{
+    return domainId == CRYS_ECPKI_DomainID_secp256r1 ? SaSi_ECPKI_GetSecp256r1DomainP() : nullptr;
 }
 
 void getMacAddr(uint8_t *dmac)
@@ -53,21 +210,16 @@ void getMacAddr(uint8_t *dmac)
     dmac[0] = src[5] | 0xc0; // MSB high two bits get set elsewhere in the bluetooth stack
 }
 
-static void initBrownout()
+bool getDeviceId(uint8_t *deviceId)
 {
-    auto vccthresh = POWER_POFCON_THRESHOLD_V24;
-
-    auto err_code = sd_power_pof_enable(POWER_POFCON_POF_Enabled);
-    assert(err_code == NRF_SUCCESS);
-
-    err_code = sd_power_pof_threshold_set(vccthresh);
-    assert(err_code == NRF_SUCCESS);
-
-    // We don't bother with setting up brownout if soft device is disabled - because during production we always use softdevice
+    // Nordic burns a FIPS-compliant random id into each chip at the factory. We concatenate
+    // the device address to that random id to form the 16-byte hardware identifier.
+    uint64_t device_id_start = ((uint64_t)NRF_FICR->DEVICEID[1] << 32) | NRF_FICR->DEVICEID[0];
+    uint64_t device_id_end = ((uint64_t)NRF_FICR->DEVICEADDR[1] << 32) | NRF_FICR->DEVICEADDR[0];
+    memcpy(deviceId, &device_id_start, sizeof(device_id_start));
+    memcpy(deviceId + sizeof(device_id_start), &device_id_end, sizeof(device_id_end));
+    return true;
 }
-
-// This is a public global so that the debugger can set it to false automatically from our gdbinit
-bool useSoftDevice = true; // Set to false for easier debugging
 
 #if !MESHTASTIC_EXCLUDE_BLUETOOTH
 void setBluetoothEnable(bool enable)
@@ -87,7 +239,6 @@ void setBluetoothEnable(bool enable)
         if (!initialized) {
             nrf52Bluetooth = new NRF52Bluetooth();
             nrf52Bluetooth->startDisabled();
-            initBrownout();
             initialized = true;
         }
         return;
@@ -101,9 +252,6 @@ void setBluetoothEnable(bool enable)
             LOG_DEBUG("Init NRF52 Bluetooth");
             nrf52Bluetooth = new NRF52Bluetooth();
             nrf52Bluetooth->setup();
-
-            // We delay brownout init until after BLE because BLE starts soft device
-            initBrownout();
         }
         // Already setup, apparently
         else
@@ -135,12 +283,17 @@ namespace
 {
 constexpr uint8_t NRF52_MAGIC_LFS_IS_CORRUPT = 0xF5;
 constexpr uint32_t MULTIPLE_CORRUPTION_DELAY_MILLIS = 20 * 60 * 1000;
-static unsigned long millis_until_formatting_again = 0;
+// When the last format happened, not when the next one is due: measuring forward from the event
+// bounds the pause below by the constant, where a stored deadline could hand delay() any value.
+// Armed separately because preFSBegin() runs in the first millisecond of boot, so a zero timestamp
+// is a legitimate value here, not an "unset" marker.
+static uint32_t last_format_ms = 0;
+static bool formatted_this_boot = false;
 
 // Report the critical error from loop(), giving a chance for the screen to be initialized first.
 inline void reportLittleFSCorruptionOnce()
 {
-    static bool report_corruption = !!millis_until_formatting_again;
+    static bool report_corruption = formatted_this_boot;
     if (report_corruption) {
         report_corruption = false;
         RECORD_CRITICALERROR(meshtastic_CriticalErrorCode_FLASH_CORRUPTION_UNRECOVERABLE);
@@ -155,7 +308,9 @@ void preFSBegin()
     if (!(NRF_POWER->RESETREAS == 0 && NRF_POWER->GPREGRET == NRF52_MAGIC_LFS_IS_CORRUPT))
         return;
     NRF_POWER->GPREGRET = 0;
-    millis_until_formatting_again = millis() + MULTIPLE_CORRUPTION_DELAY_MILLIS;
+    // unset-sentinel-ok: formatted_this_boot carries the armed state, so 0 is a legal stamp
+    last_format_ms = Time::getMillis();
+    formatted_this_boot = true;
     InternalFS.format();
     LOG_INFO("LittleFS format complete; restoring default settings");
 }
@@ -163,21 +318,45 @@ void preFSBegin()
 extern "C" void lfs_assert(const char *reason)
 {
     LOG_ERROR("LittleFS corruption detected: %s", reason);
-    if (millis_until_formatting_again > millis()) {
+    // Test the armed flag first, since elapsed-since-0 is inside the backoff for the first 20
+    // minutes after each wrap.
+    if (formatted_this_boot && Throttle::isWithinTimespanMs(last_format_ms, MULTIPLE_CORRUPTION_DELAY_MILLIS)) {
         RECORD_CRITICALERROR(meshtastic_CriticalErrorCode_FLASH_CORRUPTION_UNRECOVERABLE);
-        const long millis_remain = millis_until_formatting_again - millis();
-        LOG_WARN("Pausing %d seconds to avoid wear on flash storage", millis_remain / 1000);
+        // Same clock Throttle just read, and clamped: the check above and a second, later read
+        // can straddle the backoff, which would wrap the remainder into a ~50-day delay().
+        const uint32_t elapsed = Time::getMillis() - last_format_ms;
+        const uint32_t millis_remain =
+            elapsed < MULTIPLE_CORRUPTION_DELAY_MILLIS ? MULTIPLE_CORRUPTION_DELAY_MILLIS - elapsed : 0;
+        LOG_WARN("Pausing %u seconds to avoid wear on flash storage", millis_remain / 1000);
         delay(millis_remain);
     }
     LOG_INFO("Rebooting to format LittleFS");
     delay(500); // Give the serial port a bit of time to output that last message.
     // Try setting GPREGRET with the SoftDevice first. If that fails (perhaps because the SD hasn't been initialize yet) then set
     // NRF_POWER->GPREGRET directly.
-    if (!(sd_power_gpregret_clr(0, 0xFF) == NRF_SUCCESS && sd_power_gpregret_set(0, NRF52_MAGIC_LFS_IS_CORRUPT) == NRF_SUCCESS)) {
-        NRF_POWER->GPREGRET = NRF52_MAGIC_LFS_IS_CORRUPT;
+
+    // TODO: this will/can crash CPU if bluetooth stack is not compiled in or bluetooth is not initialized
+    // (regardless if enabled or disabled) - as there is no live SoftDevice stack
+    // implement "safe" functions detecting softdevice stack state and using proper method to set registers
+
+    // do not set GPREGRET if POFWARN is triggered because it means lfs_assert reports flash undervoltage protection
+    // and not data corruption. Reboot is fine as boot procedure will wait until power level is safe again
+
+    if (!NRF_POWER->EVENTS_POFWARN) {
+        if (!(sd_power_gpregret_clr(0, 0xFF) == NRF_SUCCESS &&
+              sd_power_gpregret_set(0, NRF52_MAGIC_LFS_IS_CORRUPT) == NRF_SUCCESS)) {
+            NRF_POWER->GPREGRET = NRF52_MAGIC_LFS_IS_CORRUPT;
+        }
     }
+
+    // TODO: this should not be done when SoftDevice is enabled as device will not boot back on soft reset
+    // as some data is retained in RAM which will prevent re-enabling bluetooth stack
+    // Google what Nordic has to say about NVIC_* + SoftDevice
     NVIC_SystemReset();
 }
+
+// Defined by the core's InternalFileSystem, completes a pending sd_flash_write()
+extern "C" void flash_nrf5x_event_cb(uint32_t event);
 
 void checkSDEvents()
 {
@@ -187,6 +366,11 @@ void checkSDEvents()
             switch (evt) {
             case NRF_EVT_POWER_FAILURE_WARNING:
                 RECORD_CRITICALERROR(meshtastic_CriticalErrorCode_BROWNOUT);
+                break;
+            // Bluefruit's SoC task polls the same queue; an event taken here must still reach the flash driver
+            case NRF_EVT_FLASH_OPERATION_SUCCESS:
+            case NRF_EVT_FLASH_OPERATION_ERROR:
+                flash_nrf5x_event_cb(evt);
                 break;
 
             default:
@@ -202,8 +386,19 @@ void checkSDEvents()
 
 void nrf52Loop()
 {
+    {
+        static bool watchdog_running = false;
+        if (!watchdog_running) {
+            nrfx_wdt_enable(&nrfx_wdt);
+            watchdog_running = true;
+        }
+    }
+    nrfx_wdt_channel_feed(&nrfx_wdt, nrfx_wdt_channel_id_nrf52_main);
+
     checkSDEvents();
     reportLittleFSCorruptionOnce();
+
+    variant_nrf52LoopHook(); // Optional variant hook called each nrf52Loop();
 }
 
 #ifdef USE_SEMIHOSTING
@@ -239,7 +434,11 @@ void nrf52Setup()
     pinMode(ADC_V, INPUT);
 #endif
 
-    uint32_t why = NRF_POWER->RESETREAS;
+    // The Adafruit core's init() (cores/nRF5/wiring.c) caches RESETREAS into a static and then
+    // W1C-clears the hardware register before setup() ever runs, so a raw NRF_POWER->RESETREAS
+    // read here is ALWAYS 0. Use the core's cached copy so this log line is actually meaningful
+    // (0x1 pin reset, 0x2 watchdog, 0x4 soft reset/SREQ, 0x8 CPU lockup, 0x10000 System OFF wake).
+    uint32_t why = readResetReason();
     // per
     // https://infocenter.nordicsemi.com/index.jsp?topic=%2Fcom.nordic.infocenter.nrf52832.ps.v1.1%2Fpower.html
     LOG_DEBUG("Reset reason: 0x%x", why);
@@ -256,19 +455,43 @@ void nrf52Setup()
 #ifdef BQ25703A_ADDR
     auto *bq = new BQ25713();
     if (!bq->setup())
-        LOG_ERROR("ERROR! Charge controller init failed");
+        LOG_ERROR("Charge controller init failed");
 #endif
 
     // Init random seed
-    union seedParts {
-        uint32_t seed32;
-        uint8_t seed8[4];
-    } seed;
-    nRFCrypto.begin();
-    nRFCrypto.Random.generate(seed.seed8, sizeof(seed.seed8));
-    LOG_DEBUG("Set random seed %u", seed.seed32);
-    randomSeed(seed.seed32);
-    nRFCrypto.end();
+    uint32_t seed = 0;
+    if (!HardwareRNG::seed(seed)) {
+        LOG_WARN("Hardware RNG seed unavailable, using PRNG fallback");
+        // Use a hardware timer value as a fallback seed for better entropy
+        seed = micros();
+    }
+    LOG_DEBUG("Set random seed %u", seed);
+    randomSeed(seed);
+
+    // Set up nrfx watchdog. Do not enable the watchdog yet (we do that
+    // the first time through the main loop), so that other threads can
+    // allocate their own wdt channel to protect themselves from hangs.
+    nrfx_wdt_config_t wdt0_config = {
+        .behaviour = NRF_WDT_BEHAVIOUR_PAUSE_SLEEP_HALT, .reload_value = APP_WATCHDOG_SECS * 1000,
+        // Note: Not using wdt interrupts.
+        // .interrupt_priority = NRFX_WDT_DEFAULT_CONFIG_IRQ_PRIORITY
+    };
+    nrfx_err_t r = nrfx_wdt_init(&nrfx_wdt, &wdt0_config,
+                                 nullptr // Watchdog event handler, not used, we just reset.
+    );
+    assert(r == NRFX_SUCCESS);
+
+    r = nrfx_wdt_channel_alloc(&nrfx_wdt, &nrfx_wdt_channel_id_nrf52_main);
+    assert(r == NRFX_SUCCESS);
+}
+
+// Waits out any flash write another task has in flight, drains the shared page cache, and keeps
+// both locks: the caller resets next, and a reset mid-program tears the page.
+void nrf52FlashQuiesce()
+{
+    spiLock->lock();
+    InternalFS._lockFS();
+    flash_nrf5x_flush();
 }
 
 void cpuDeepSleep(uint32_t msecToWake)
@@ -291,6 +514,7 @@ void cpuDeepSleep(uint32_t msecToWake)
     if (Serial1) // A straightforward solution to the wake from deepsleep problem
         Serial1.end();
 #endif
+
     setBluetoothEnable(false);
 
 #ifdef RAK4630
@@ -301,57 +525,11 @@ void cpuDeepSleep(uint32_t msecToWake)
     // RAK-12039 set pin for Air quality sensor
     digitalWrite(AQ_SET_PIN, LOW);
 #endif
-#ifdef RAK14014
-    // GPIO restores input status, otherwise there will be leakage current
-    nrf_gpio_cfg_default(TFT_BL);
-    nrf_gpio_cfg_default(TFT_DC);
-    nrf_gpio_cfg_default(TFT_CS);
-    nrf_gpio_cfg_default(TFT_SCLK);
-    nrf_gpio_cfg_default(TFT_MOSI);
-    nrf_gpio_cfg_default(TFT_MISO);
-    nrf_gpio_cfg_default(SCREEN_TOUCH_INT);
-    nrf_gpio_cfg_default(WB_I2C1_SCL);
-    nrf_gpio_cfg_default(WB_I2C1_SDA);
+#endif
+    // Run shutdown code if specified in variant.cpp
+    variant_shutdown();
 
-    // nrf_gpio_cfg_default(WB_I2C2_SCL);
-    // nrf_gpio_cfg_default(WB_I2C2_SDA);
-#endif
-#endif
-#ifdef MESHLINK
-#ifdef PIN_WD_EN
-    digitalWrite(PIN_WD_EN, LOW);
-#endif
-#endif
-
-#if defined(HELTEC_MESH_NODE_T114) || defined(HELTEC_MESH_SOLAR)
-    nrf_gpio_cfg_default(PIN_GPS_PPS);
-    detachInterrupt(PIN_GPS_PPS);
-    detachInterrupt(PIN_BUTTON1);
-#endif
-
-#ifdef ELECROW_ThinkNode_M1
-    for (int pin = 0; pin < 48; pin++) {
-        if (pin == 17 || pin == 19 || pin == 20 || pin == 22 || pin == 23 || pin == 24 || pin == 25 || pin == 9 || pin == 10 ||
-            pin == PIN_BUTTON1 || pin == PIN_BUTTON2) {
-            continue;
-        }
-        pinMode(pin, OUTPUT);
-    }
-    for (int pin = 0; pin < 48; pin++) {
-        if (pin == 17 || pin == 19 || pin == 20 || pin == 22 || pin == 23 || pin == 24 || pin == 25 || pin == 9 || pin == 10 ||
-            pin == PIN_BUTTON1 || pin == PIN_BUTTON2) {
-            continue;
-        }
-        digitalWrite(pin, LOW);
-    }
-    for (int pin = 0; pin < 48; pin++) {
-        if (pin == 17 || pin == 19 || pin == 20 || pin == 22 || pin == 23 || pin == 24 || pin == 25 || pin == 9 || pin == 10 ||
-            pin == PIN_BUTTON1 || pin == PIN_BUTTON2) {
-            continue;
-        }
-        NRF_GPIO->DIRCLR = (1 << pin);
-    }
-#endif
+    nrf52FlashQuiesce();
 
     // Sleepy trackers or sensors can low power "sleep"
     // Don't enter this if we're sleeping portMAX_DELAY, since that's a shutdown event
@@ -373,25 +551,29 @@ void cpuDeepSleep(uint32_t msecToWake)
         // FIXME, use non-init RAM per
         // https://devzone.nordicsemi.com/f/nordic-q-a/48919/ram-retention-settings-with-softdevice-enabled
 
-#ifdef ELECROW_ThinkNode_M1
-        nrf_gpio_cfg_input(PIN_BUTTON1, NRF_GPIO_PIN_PULLUP); // Configure the pin to be woken up as an input
-        nrf_gpio_pin_sense_t sense = NRF_GPIO_PIN_SENSE_LOW;
-        nrf_gpio_cfg_sense_set(PIN_BUTTON1, sense);
+#ifdef BATTERY_LPCOMP_INPUT
+        // Only enable LPCOMP wake if the variant allows it
+        if (variant_enableBatteryLpcompWake()) {
+            // Wake up if power rises again
+            nrf_lpcomp_config_t c;
+            c.reference = BATTERY_LPCOMP_THRESHOLD;
+            c.detection = NRF_LPCOMP_DETECT_UP;
+            c.hyst = NRF_LPCOMP_HYST_NOHYST;
+            nrf_lpcomp_configure(NRF_LPCOMP, &c);
+            nrf_lpcomp_input_select(NRF_LPCOMP, BATTERY_LPCOMP_INPUT);
+            nrf_lpcomp_enable(NRF_LPCOMP);
 
-        nrf_gpio_cfg_input(PIN_BUTTON2, NRF_GPIO_PIN_PULLUP);
-        nrf_gpio_pin_sense_t sense1 = NRF_GPIO_PIN_SENSE_LOW;
-        nrf_gpio_cfg_sense_set(PIN_BUTTON2, sense1);
-#endif
+            battery_adcEnable();
 
-#ifdef PROMICRO_DIY_TCXO
-        nrf_gpio_cfg_input(BUTTON_PIN, NRF_GPIO_PIN_PULLUP); // Enable internal pull-up on the button pin
-        nrf_gpio_pin_sense_t sense = NRF_GPIO_PIN_SENSE_LOW; // Configure SENSE signal on low edge
-        nrf_gpio_cfg_sense_set(BUTTON_PIN, sense);           // Apply SENSE to wake up the device from the deep sleep
+            nrf_lpcomp_task_trigger(NRF_LPCOMP, NRF_LPCOMP_TASK_START);
+            while (!nrf_lpcomp_event_check(NRF_LPCOMP, NRF_LPCOMP_EVENT_READY))
+                ;
+        }
 #endif
 
         auto ok = sd_power_system_off();
         if (ok != NRF_SUCCESS) {
-            LOG_ERROR("FIXME: Ignoring soft device (EasyDMA pending?) and forcing system-off!");
+            LOG_ERROR("FIXME: Ignoring soft device (EasyDMA pending?) and forcing system-off");
             NRF_POWER->SYSTEMOFF = 1;
         }
     }
@@ -414,6 +596,7 @@ void clearBonds()
 
 void enterDfuMode()
 {
+    nrf52FlashQuiesce();
 // SDK kit does not have native USB like almost all other NRF52 boards
 #ifdef NRF_USE_SERIAL_DFU
     enterSerialDfu();

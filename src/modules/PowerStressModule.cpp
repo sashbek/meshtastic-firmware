@@ -1,11 +1,10 @@
 #include "PowerStressModule.h"
-#include "Led.h"
 #include "MeshService.h"
 #include "NodeDB.h"
 #include "PowerMon.h"
-#include "RTC.h"
 #include "Router.h"
 #include "configuration.h"
+#include "gps/RTC.h"
 #include "main.h"
 #include "sleep.h"
 #include "target_specific.h"
@@ -78,10 +77,12 @@ int32_t PowerStressModule::runOnce()
 
             switch (p.cmd) {
             case meshtastic_PowerStressMessage_Opcode_LED_ON:
-                ledForceOn.set(true);
+                // FIXME - implement
+                // ledForceOn.set(true);
                 break;
             case meshtastic_PowerStressMessage_Opcode_LED_OFF:
-                ledForceOn.set(false);
+                // FIXME - implement
+                // ledForceOn.set(false);
                 break;
             case meshtastic_PowerStressMessage_Opcode_GPS_ON:
                 // FIXME - implement
@@ -124,7 +125,7 @@ int32_t PowerStressModule::runOnce()
                 // FIXME - implement
                 break;
             default:
-                LOG_ERROR("PowerStress operation %d not yet implemented!", p.cmd);
+                LOG_ERROR("PowerStress operation %d not yet implemented", p.cmd);
                 sleep_msec = 0; // Don't do whatever sleep was requested...
                 break;
             }

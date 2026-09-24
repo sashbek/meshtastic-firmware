@@ -33,9 +33,6 @@
 #ifndef HAS_RADIO
 #define HAS_RADIO 1
 #endif
-#ifndef HAS_RTC
-#define HAS_RTC 1
-#endif
 #ifndef HAS_CPU_SHUTDOWN
 #define HAS_CPU_SHUTDOWN 1
 #endif
@@ -101,8 +98,6 @@
 #define HW_VENDOR meshtastic_HardwareModel_T_WATCH_S3
 #elif defined(GENIEBLOCKS)
 #define HW_VENDOR meshtastic_HardwareModel_GENIEBLOCKS
-#elif defined(PRIVATE_HW)
-#define HW_VENDOR meshtastic_HardwareModel_PRIVATE_HW
 #elif defined(NANO_G1)
 #define HW_VENDOR meshtastic_HardwareModel_NANO_G1
 #elif defined(M5STACK)
@@ -151,6 +146,8 @@
 #define HW_VENDOR meshtastic_HardwareModel_THINKNODE_M2
 #elif defined(ELECROW_ThinkNode_M5)
 #define HW_VENDOR meshtastic_HardwareModel_THINKNODE_M5
+#elif defined(ELECROW_ThinkNode_M7)
+#define HW_VENDOR meshtastic_HardwareModel_THINKNODE_M7
 #elif defined(ESP32_S3_PICO)
 #define HW_VENDOR meshtastic_HardwareModel_ESP32_S3_PICO
 #elif defined(SENSELORA_S3)
@@ -161,6 +158,8 @@
 #define HW_VENDOR meshtastic_HardwareModel_CHATTER_2
 #elif defined(STATION_G2)
 #define HW_VENDOR meshtastic_HardwareModel_STATION_G2
+#elif defined(STATION_G3)
+#define HW_VENDOR meshtastic_HardwareModel_STATION_G3
 #elif defined(UNPHONE)
 #define HW_VENDOR meshtastic_HardwareModel_UNPHONE
 #elif defined(WIPHONE)
@@ -189,12 +188,19 @@
 #define HW_VENDOR meshtastic_HardwareModel_HELTEC_SENSOR_HUB
 #elif defined(ELECROW_PANEL)
 #define HW_VENDOR meshtastic_HardwareModel_CROWPANEL
+// The WisMesh Tap V2 is a RAK3312 board, so it must be matched before the generic one.
+#elif defined(RAK_WISMESH_TAP_V2)
+#define HW_VENDOR meshtastic_HardwareModel_WISMESH_TAP_V2
 #elif defined(RAK3312)
 #define HW_VENDOR meshtastic_HardwareModel_RAK3312
 #elif defined(LINK_32)
 #define HW_VENDOR meshtastic_HardwareModel_LINK_32
 #elif defined(T_DECK_PRO)
 #define HW_VENDOR meshtastic_HardwareModel_T_DECK_PRO
+#elif defined(T_BEAM_1W)
+#define HW_VENDOR meshtastic_HardwareModel_TBEAM_1_WATT
+#elif defined(T_BEAM_BPF)
+#define HW_VENDOR meshtastic_HardwareModel_TBEAM_BPF
 #elif defined(T_LORA_PAGER)
 #define HW_VENDOR meshtastic_HardwareModel_T_LORA_PAGER
 #elif defined(HELTEC_V4)
@@ -203,6 +209,32 @@
 #define HW_VENDOR meshtastic_HardwareModel_M5STACK_C6L
 #elif defined(HELTEC_WIRELESS_TRACKER_V2)
 #define HW_VENDOR meshtastic_HardwareModel_HELTEC_WIRELESS_TRACKER_V2
+#elif defined(T_WATCH_ULTRA)
+#define HW_VENDOR meshtastic_HardwareModel_T_WATCH_ULTRA
+#elif defined(M5STACK_CARDPUTER_ADV)
+#define HW_VENDOR meshtastic_HardwareModel_M5STACK_CARDPUTER_ADV
+#elif defined(MESHNOLOGY_W10)
+#define HW_VENDOR meshtastic_HardwareModel_MESHNOLOGY_W10
+#elif defined(T5_S3_EPAPER_PRO)
+#define HW_VENDOR meshtastic_HardwareModel_T5_S3_EPAPER_PRO
+#elif defined(ELECROW_ThinkNode_M9)
+#define HW_VENDOR meshtastic_HardwareModel_THINKNODE_M9
+#elif defined(HELTEC_V4_R8)
+#define HW_VENDOR meshtastic_HardwareModel_HELTEC_V4_R8
+#elif defined(MINI_EPAPER_S3)
+#define HW_VENDOR meshtastic_HardwareModel_MINI_EPAPER_S3
+#elif defined(HELTEC_RC32)
+#define HW_VENDOR meshtastic_HardwareModel_HELTEC_RC32
+#elif defined(HELTEC_RCC6)
+#define HW_VENDOR meshtastic_HardwareModel_HELTEC_RCC6
+#elif defined(SEEED_WIO_TRACKER_L2)
+#define HW_VENDOR meshtastic_HardwareModel_SEEED_WIO_TRACKER_L2
+#elif defined(T_CONNECT_PRO)
+#define HW_VENDOR meshtastic_HardwareModel_T_CONNECT_PRO
+#elif defined(AXIOMETA_GENESIS_MINI)
+#define HW_VENDOR meshtastic_HardwareModel_AXIOMETA_GENESIS_MINI
+#else
+#define HW_VENDOR meshtastic_HardwareModel_PRIVATE_HW
 #endif
 
 // -----------------------------------------------------------------------------
