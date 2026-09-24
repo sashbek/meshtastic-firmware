@@ -14,11 +14,21 @@ Lock::Lock() : handle(xSemaphoreCreateBinary())
     }
 }
 
+Lock::~Lock()
+{
+    vSemaphoreDelete(handle);
+}
+
 void Lock::lock()
 {
     if (xSemaphoreTake(handle, portMAX_DELAY) == false) {
         abort();
     }
+}
+
+bool Lock::lock(uint32_t timeout)
+{
+    return xSemaphoreTake(handle, pdMS_TO_TICKS(timeout)) == pdTRUE;
 }
 
 void Lock::unlock()
@@ -30,7 +40,14 @@ void Lock::unlock()
 #else
 Lock::Lock() {}
 
+Lock::~Lock() {}
+
 void Lock::lock() {}
+
+bool Lock::lock(uint32_t)
+{
+    return true;
+}
 
 void Lock::unlock() {}
 #endif

@@ -1,8 +1,8 @@
 #pragma once
 
 #include "../freertosinc.h"
+#include "Print.h"
 #include "mesh/generated/meshtastic/mesh.pb.h"
-#include <Print.h>
 #include <stdarg.h>
 #include <string>
 
@@ -41,10 +41,11 @@ class RedirectablePrint : public Print
      */
     void log(const char *logLevel, const char *format, ...) __attribute__((format(printf, 3, 4)));
 
-    /** like printf but va_list based */
-    size_t vprintf(const char *logLevel, const char *format, va_list arg);
+    /** like printf but va_list based. threadName is prefixed unless the
+     * message already starts with a "[Tag] " of its own */
+    size_t vprintf(const char *logLevel, const char *format, va_list arg, const char *threadName = nullptr);
 
-    void hexDump(const char *logLevel, unsigned char *buf, uint16_t len);
+    void hexDump(const char *logLevel, const unsigned char *buf, uint16_t len);
 
     std::string mt_sprintf(const std::string fmt_str, ...);
 

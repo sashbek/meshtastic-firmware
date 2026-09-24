@@ -2,6 +2,8 @@
 
 #include "./DMApplet.h"
 
+#include "MessageStore.h"
+
 using namespace NicheGraphics;
 
 void InkHUD::DMApplet::onActivate()
@@ -37,10 +39,10 @@ int InkHUD::DMApplet::onReceiveTextMessage(const meshtastic_MeshPacket *p)
     return 0;
 }
 
-void InkHUD::DMApplet::onRender()
+void InkHUD::DMApplet::onRender(bool full)
 {
     // Abort if no text message
-    if (!latestMessage->dm.sender) {
+    if (!latestMessage->dm.sender || !messageStore.isMessageVisible(latestMessage->dm)) {
         printAt(X(0.5), Y(0.5), "No DMs", CENTER, MIDDLE);
         return;
     }
@@ -66,10 +68,10 @@ void InkHUD::DMApplet::onRender()
     // - shortname and long name, if available, or
     // - node id
     meshtastic_NodeInfoLite *sender = nodeDB->getMeshNode(latestMessage->dm.sender);
-    if (sender && sender->has_user) {
+    if (nodeInfoLiteHasUser(sender)) {
         header += parseShortName(sender); // May be last-four of node if unprintable (emoji, etc)
         header += " (";
-        header += parse(sender->user.long_name);
+        header += parse(sender->long_name);
         header += ")";
     } else
         header += hexifyNodeNum(latestMessage->dm.sender);
@@ -92,7 +94,7 @@ void InkHUD::DMApplet::onRender()
     // ===================
 
     // Parse any non-ascii chars in the message
-    std::string text = parse(latestMessage->dm.text);
+    std::string text = parse(std::string(MessageStore::getText(latestMessage->dm)));
 
     // Extra gap below the header
     int16_t textTop = headerDivY + padDivH;

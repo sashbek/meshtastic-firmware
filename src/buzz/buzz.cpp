@@ -6,6 +6,15 @@
 #include "Tone.h"
 #endif
 
+#if defined(HAS_I2S)
+#include "main.h"
+#include <unordered_map>
+#endif
+
+#if defined(HAS_I2S_SPEAKER_NRF52)
+#include "platform/nrf52/NRF52I2SOutput.h"
+#endif
+
 #if !defined(ARCH_PORTDUINO)
 extern "C" void delay(uint32_t dwMs);
 #endif
@@ -16,6 +25,7 @@ struct ToneDuration {
 };
 
 // Some common frequencies.
+#define NOTE_SILENT 1
 #define NOTE_C3 131
 #define NOTE_CS3 139
 #define NOTE_D3 147
@@ -29,12 +39,72 @@ struct ToneDuration {
 #define NOTE_AS3 233
 #define NOTE_B3 247
 #define NOTE_CS4 277
+#define NOTE_B4 494
+#define NOTE_F5 698
+#define NOTE_G6 1568
+#define NOTE_E7 2637
 
+#define NOTE_C4 262
+#define NOTE_E4 330
+#define NOTE_G4 392
+#define NOTE_A4 440
+#define NOTE_C5 523
+#define NOTE_E5 659
+#define NOTE_G5 784
+
+const int DURATION_1_16 = 62;  // 1/16 note
 const int DURATION_1_8 = 125;  // 1/8 note
 const int DURATION_1_4 = 250;  // 1/4 note
 const int DURATION_1_2 = 500;  // 1/2 note
-const int DURATION_3_4 = 750;  // 1/4 note
+const int DURATION_3_4 = 750;  // 3/4 note
 const int DURATION_1_1 = 1000; // 1/1 note
+
+#ifdef HAS_I2S
+void playTonesRTTTL(const ToneDuration *tone_durations, int size)
+{
+    // translate ToneDuration[] to a single RTTTL string and play it via audioThread
+    static std::unordered_map<int, const char *> freqToNote = {
+        {NOTE_SILENT, "p"}, // rest
+        {NOTE_C3, "c4"},    {NOTE_CS3, "c#4"}, {NOTE_D3, "d4"},   {NOTE_DS3, "d#4"}, {NOTE_E3, "e4"},   {NOTE_F3, "f4"},
+        {NOTE_FS3, "f#4"},  {NOTE_G3, "g4"},   {NOTE_GS3, "g#4"}, {NOTE_A3, "a4"},   {NOTE_AS3, "a#4"}, {NOTE_B3, "b4"},
+        {NOTE_C4, "c5"},    {NOTE_CS4, "c#5"}, {NOTE_E4, "e5"},   {NOTE_G4, "g5"},   {NOTE_A4, "a5"},   {NOTE_B4, "b5"},
+        {NOTE_C5, "c6"},    {NOTE_E5, "e6"},   {NOTE_G5, "g6"},   {NOTE_F5, "f6"},   {NOTE_G6, "g7"},   {NOTE_E7, "e8"}};
+
+    char rtttl[128] = "tone:d=32,o=4,b=240:"; // b=240 makes 240000/(bpm*d) match the ms durations above
+    for (int i = 0; i < size; i++) {
+        const auto &td = tone_durations[i];
+        int dur = 32; // default duration
+        if (td.duration_ms >= 1000)
+            dur = 1;
+        else if (td.duration_ms >= 500)
+            dur = 2;
+        else if (td.duration_ms >= 250)
+            dur = 4;
+        else if (td.duration_ms >= 125)
+            dur = 8;
+        else if (td.duration_ms >= 62)
+            dur = 16;
+        else
+            dur = 32;
+
+        auto it = freqToNote.find(td.frequency_khz);
+        const char *note = (it != freqToNote.end()) ? it->second : "p"; // unknown freq -> rest
+
+        // RTTTL grammar puts duration before the note; notes are comma-separated
+        char noteStr[64];
+        snprintf(noteStr, sizeof(noteStr), "%s%d%s", i ? "," : "", dur, note);
+        strncat(rtttl, noteStr, sizeof(rtttl) - strlen(rtttl) - 1);
+    }
+    // trailing rest flushes the last note out of the I2S DMA buffer before teardown
+    strncat(rtttl, ",32p", sizeof(rtttl) - strlen(rtttl) - 1);
+
+    audioThread->beginRttl(rtttl, strlen(rtttl));
+    while (audioThread->isPlaying()) {
+        delay(10);
+    }
+    audioThread->stop(); // release I2S so the amp goes silent instead of looping the last buffer
+}
+#endif
 
 void playTones(const ToneDuration *tone_durations, int size)
 {
@@ -43,7 +113,39 @@ void playTones(const ToneDuration *tone_durations, int size)
         // Buzzer is disabled or not set to system tones
         return;
     }
-#ifdef PIN_BUZZER
+#ifdef HAS_I2S
+    if (moduleConfig.external_notification.use_i2s_as_buzzer && audioThread) {
+        playTonesRTTTL(tone_durations, size);
+        return;
+    }
+#endif
+#if defined(HAS_I2S_SPEAKER_NRF52)
+    // Native I2S speaker path (no ESP AudioThread/RTTTL needed here).
+    pinMode(SPEAKER_EN, OUTPUT);
+    digitalWrite(SPEAKER_EN, HIGH);
+#if defined(SPEAKER_EN_2)
+    pinMode(SPEAKER_EN_2, OUTPUT);
+    digitalWrite(SPEAKER_EN_2, HIGH);
+#endif
+    if (!nrf52I2SOutput.begin(SPEAKER_BCLK, SPEAKER_WS_LRCK, SPEAKER_DATA)) {
+        digitalWrite(SPEAKER_EN, LOW);
+#if defined(SPEAKER_EN_2)
+        digitalWrite(SPEAKER_EN_2, LOW);
+#endif
+        return;
+    }
+    for (int i = 0; i < size; i++) {
+        const auto &tone_duration = tone_durations[i];
+        nrf52I2SOutput.playTone(tone_duration.frequency_khz, tone_duration.duration_ms);
+    }
+    nrf52I2SOutput.end();
+    digitalWrite(SPEAKER_EN, LOW);
+#if defined(SPEAKER_EN_2)
+    digitalWrite(SPEAKER_EN_2, LOW);
+#endif
+    return;
+#endif
+#if defined(PIN_BUZZER)
     if (!config.device.buzzer_gpio)
         config.device.buzzer_gpio = PIN_BUZZER;
 #endif
@@ -59,7 +161,7 @@ void playTones(const ToneDuration *tone_durations, int size)
 
 void playBeep()
 {
-    ToneDuration melody[] = {{NOTE_B3, DURATION_1_8}};
+    ToneDuration melody[] = {{NOTE_B3, DURATION_1_16}};
     playTones(melody, sizeof(melody) / sizeof(ToneDuration));
 }
 
@@ -71,13 +173,24 @@ void playLongBeep()
 
 void playGPSEnableBeep()
 {
+#if defined(R1_NEO) || defined(MUZI_BASE)
+    ToneDuration melody[] = {
+        {NOTE_F5, DURATION_1_2}, {NOTE_G6, DURATION_1_8}, {NOTE_E7, DURATION_1_4}, {NOTE_SILENT, DURATION_1_2}};
+#else
     ToneDuration melody[] = {{NOTE_C3, DURATION_1_8}, {NOTE_FS3, DURATION_1_4}, {NOTE_CS4, DURATION_1_4}};
+#endif
     playTones(melody, sizeof(melody) / sizeof(ToneDuration));
 }
 
 void playGPSDisableBeep()
 {
+#if defined(R1_NEO) || defined(MUZI_BASE)
+    ToneDuration melody[] = {{NOTE_B4, DURATION_1_16}, {NOTE_B4, DURATION_1_16},   {NOTE_SILENT, DURATION_1_8},
+                             {NOTE_F3, DURATION_1_16}, {NOTE_F3, DURATION_1_16},   {NOTE_SILENT, DURATION_1_8},
+                             {NOTE_C3, DURATION_1_1},  {NOTE_SILENT, DURATION_1_1}};
+#else
     ToneDuration melody[] = {{NOTE_CS4, DURATION_1_8}, {NOTE_FS3, DURATION_1_4}, {NOTE_C3, DURATION_1_4}};
+#endif
     playTones(melody, sizeof(melody) / sizeof(ToneDuration));
 }
 
@@ -96,7 +209,14 @@ void playShutdownMelody()
 void playChirp()
 {
     // A short, friendly "chirp" sound for key presses
-    ToneDuration melody[] = {{NOTE_AS3, 20}}; // Very short AS3 note
+    ToneDuration melody[] = {{NOTE_AS3, 20}}; // Short AS3 note
+    playTones(melody, sizeof(melody) / sizeof(ToneDuration));
+}
+
+void playClick()
+{
+    // A very short "click" sound with minimum delay; ideal for rotary encoder events
+    ToneDuration melody[] = {{NOTE_AS3, 1}}; // Very Short AS3
     playTones(melody, sizeof(melody) / sizeof(ToneDuration));
 }
 
@@ -104,18 +224,6 @@ void playBoop()
 {
     // A short, friendly "boop" sound for button presses
     ToneDuration melody[] = {{NOTE_A3, 50}}; // Very short A3 note
-    playTones(melody, sizeof(melody) / sizeof(ToneDuration));
-}
-
-void playLongPressLeadUp()
-{
-    // An ascending lead-up sequence for long press - builds anticipation
-    ToneDuration melody[] = {
-        {NOTE_C3, 100}, // Start low
-        {NOTE_E3, 100}, // Step up
-        {NOTE_G3, 100}, // Keep climbing
-        {NOTE_B3, 150}  // Peak with longer note for emphasis
-    };
     playTones(melody, sizeof(melody) / sizeof(ToneDuration));
 }
 
@@ -163,5 +271,19 @@ void playComboTune()
         {NOTE_CS4, 60}, // Quick trill up
         {NOTE_B3, 120}  // Ending chirp
     };
+    playTones(melody, sizeof(melody) / sizeof(ToneDuration));
+}
+
+void play4ClickDown()
+{
+    ToneDuration melody[] = {{NOTE_G5, 55}, {NOTE_E5, 55}, {NOTE_C5, 60},  {NOTE_A4, 55},  {NOTE_G4, 55},
+                             {NOTE_E4, 65}, {NOTE_C4, 80}, {NOTE_G3, 120}, {NOTE_E3, 160}, {NOTE_SILENT, 120}};
+    playTones(melody, sizeof(melody) / sizeof(ToneDuration));
+}
+
+void play4ClickUp()
+{
+    // Quick high-pitched notes with trills
+    ToneDuration melody[] = {{NOTE_F5, 50}, {NOTE_G6, 45}, {NOTE_E7, 60}};
     playTones(melody, sizeof(melody) / sizeof(ToneDuration));
 }

@@ -44,6 +44,7 @@ struct UIFrameEvent {
         REDRAW_ONLY,                    // Don't change which frames are show, just redraw, asap
         REGENERATE_FRAMESET,            // Regenerate (change? add? remove?) screen frames, honoring requestFocus()
         REGENERATE_FRAMESET_BACKGROUND, // Regenerate screen frames, Attempt to remain on the same frame throughout
+        SWITCH_TO_TEXTMESSAGE           // Jump directly to the Text Message screen
     } action = REDRAW_ONLY;
 
     // We might want to pass additional data inside this struct at some point
@@ -67,9 +68,11 @@ class MeshModule
     /** Constructor
      * name is for debugging output
      */
-    MeshModule(const char *_name);
+    MeshModule(const char *_name, meshtastic_PortNum _ourPortNum = meshtastic_PortNum_UNKNOWN_APP);
 
     virtual ~MeshModule();
+
+    static bool replyPortMatches(meshtastic_PortNum modulePort, const meshtastic_MeshPacket &mp);
 
     /** For use only by MeshService
      */
@@ -87,6 +90,7 @@ class MeshModule
 #endif
   protected:
     const char *name;
+    meshtastic_PortNum ourPortNum;
 
     /** Most modules only care about packets that are destined for their node (i.e. broadcasts or has their node as the specific
     recipient) But some plugs might want to 'sniff' packets that are merely being routed (passing through the current node). Those
@@ -102,8 +106,20 @@ class MeshModule
      * flag */
     bool encryptedOk = false;
 
-    /* We allow modules to ignore a request without sending an error if they have a specific reason for it. */
+    /* Per-packet flag cleared by callModules(); modules can suppress an error response for a specific request. */
     bool ignoreRequest = false;
+
+    /**
+     * Check if the current request is a multi-hop broadcast. Modules should call this in allocReply()
+     * and return NULL to prevent reply storms from broadcast requests that have already been relayed.
+     */
+    bool isMultiHopBroadcastRequest()
+    {
+        if (currentRequest && isBroadcast(currentRequest->to) && currentRequest->hop_limit < currentRequest->hop_start) {
+            return true;
+        }
+        return false;
+    }
 
     /** If a bound channel name is set, we will only accept received packets that come in on that channel.
      * A special exception (FIXME, not sure if this is a good idea) - packets that arrive on the local interface
@@ -171,7 +187,7 @@ class MeshModule
     virtual Observable<const UIFrameEvent *> *getUIFrameObservable() { return NULL; }
 
     meshtastic_MeshPacket *allocAckNak(meshtastic_Routing_Error err, NodeNum to, PacketId idFrom, ChannelIndex chIndex,
-                                       uint8_t hopLimit = 0);
+                                       uint8_t hopLimit = 0, const meshtastic_MeshPacket *relaySource = nullptr);
 
     /// Send an error response for the specified packet.
     meshtastic_MeshPacket *allocErrorResponse(meshtastic_Routing_Error err, const meshtastic_MeshPacket *p);

@@ -15,9 +15,18 @@ Do not expect a working Meshtastic device with this target.
 
 #define USE_STM32WLx
 
-#define LED_PIN PB4 // LED1
-// #define LED_PIN PB3 // LED2
+#define LED_POWER PB4 // LED1
+// #define LED_POWER PB3 // LED2
 #define LED_STATE_ON 1
 
+#define SERIAL_PRINT_PORT 1
+
 #define EBYTE_E77_MBL
+
+// LoRa
+// Hardware varies by unit: SN >= 3202995 has a TCXO, older units have XTAL only -
+// https://github.com/olliw42/mLRS-docu/blob/main/docs/EBYTE_E77_MBL.md
+#define TCXO_OPTIONAL
+#define SX126X_DIO3_TCXO_VOLTAGE 1.7
+
 #endif

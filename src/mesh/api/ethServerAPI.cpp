@@ -1,25 +1,34 @@
 #include "configuration.h"
 #include <Arduino.h>
 
-#if HAS_ETHERNET && !defined(USE_WS5500)
+#if HAS_ETHERNET && !defined(USE_WS5500) && !defined(USE_CH390D)
 
 #include "ethServerAPI.h"
 
-static ethServerPort *apiPort;
+static std::unique_ptr<ethServerPort> apiPort;
 
 void initApiServer(int port)
 {
     // Start API server on port 4403
     if (!apiPort) {
-        apiPort = new ethServerPort(port);
+        apiPort = std::make_unique<ethServerPort>(port);
         LOG_INFO("API server listening on TCP port %d", port);
         apiPort->init();
+    }
+}
+
+void deInitApiServer()
+{
+    if (apiPort) {
+        LOG_INFO("Deinit API server");
+        apiPort.reset();
     }
 }
 
 ethServerAPI::ethServerAPI(EthernetClient &_client) : ServerAPI(_client)
 {
     LOG_INFO("Incoming ethernet connection");
+    api_type = TYPE_ETH;
 }
 
 ethServerPort::ethServerPort(int port) : APIServerPort(port) {}

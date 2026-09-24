@@ -14,14 +14,13 @@ Do not expect a working Meshtastic device with this target.
 
 #define USE_STM32WLx
 
-#define LED_PIN PB5
-#define LED_STATE_ON 1
+#define LED_POWER PB5
+#define LED_STATE_ON 0
 
 #define WIO_E5
 
-#if (defined(LED_BUILTIN) && LED_BUILTIN == PNUM_NOT_DEFINED)
-#undef LED_BUILTIN
-#define LED_BUILTIN (LED_PIN)
-#endif
+// LoRa
+// https://github.com/Seeed-Studio/LoRaWan-E5-Node/blob/163c05379b1805dd8f2c061d4557a69985acc953/Middlewares/Third_Party/SubGHz_Phy/stm32_radio_driver/radio_driver.c#L94
+#define SX126X_DIO3_TCXO_VOLTAGE 1.7
 
 #endif

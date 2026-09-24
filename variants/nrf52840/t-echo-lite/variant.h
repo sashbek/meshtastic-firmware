@@ -51,9 +51,6 @@ extern "C" {
 #define LED_GREEN PIN_LED1
 
 #define BLE_LED LED_BLUE
-#define BLE_LED_INVERTED 1
-#define LED_BUILTIN LED_GREEN
-#define LED_CONN LED_GREEN
 #define LED_STATE_ON 0 // State when LED is lit
 
 // Buttons
@@ -134,7 +131,7 @@ static const uint8_t A0 = PIN_A0;
 #define PIN_SPI1_SCK PIN_EINK_SCLK
 
 // GPS pins
-// #define GPS_DEBUG
+// #define GPS_DEBUG 1
 #define GPS_L76K
 #define GPS_BAUDRATE 9600
 #define HAS_GPS 1
@@ -170,6 +167,8 @@ static const uint8_t A0 = PIN_A0;
 #define AREF_VOLTAGE 3.0
 #define VBAT_AR_INTERNAL AR_INTERNAL_3_0
 #define ADC_MULTIPLIER (2.0F)
+
+#define SERIAL_PRINT_PORT 0
 
 // #define NO_EXT_GPIO 1
 // PINs back side
